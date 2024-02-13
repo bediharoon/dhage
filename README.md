@@ -12,3 +12,4 @@ A 'go' at implementing CSP-style preemptive concurrency in C.
 - [ ] Write tests and analytics.
 - [ ] Evaluate using other kinds of multi-threading.
 - [ ] Switch from ucontext.h to using assembly.
+- [ ] Policy and Event Driven Scheduling
