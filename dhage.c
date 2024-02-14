@@ -5,6 +5,7 @@
 
 #define STACK_SIZE 1024 * 2
 
+void error();
 void cleanup_thread();
 void switch_threads();
 void thread_exit();
@@ -68,12 +69,12 @@ thread_exit()
 void
 thread_wrapper()
 {
-    current_thread->function();
+    current_thread->function(current_thread->args);
     thread_exit();
 }
 
 int
-create_thread(void (*function)(void))
+create_thread(void (*function)(void *), void *args)
 {
     static int tid = 0;
 
@@ -85,6 +86,7 @@ create_thread(void (*function)(void))
 
     gt->function = function;
     gt->active = 1;
+    gt->args = args;
 
     if (current_thread == NULL) {
         gt->tid = tid+1;
