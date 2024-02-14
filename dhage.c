@@ -5,23 +5,12 @@
 
 #define STACK_SIZE 1024 * 2
 
-struct GreenThread {
-    ucontext_t context;
-    void (*function)(void);
-    int active;
-    int tid;
-    struct GreenThread *next;
-    void *stack;
-};
-
-void initialise();
 void cleanup_thread();
 void switch_threads();
 void thread_exit();
 void thread_wrapper();
-int create_thread(void (*function)(void));
 
-struct GreenThread *current_thread = NULL;
+struct GreenThread *current_thread;
 ucontext_t cleanup_context;
 
 void
@@ -33,6 +22,8 @@ error()
 void
 initialise()
 {
+    current_thread = NULL;
+
     getcontext(&cleanup_context);
     cleanup_context.uc_stack.ss_sp = malloc(STACK_SIZE);
     cleanup_context.uc_stack.ss_size = STACK_SIZE;
@@ -122,4 +113,10 @@ create_thread(void (*function)(void))
     makecontext(&gt->context, thread_wrapper, 0);
 
     return tid++;
+}
+
+void
+orchestrate()
+{
+    setcontext(&current_thread->context);
 }
