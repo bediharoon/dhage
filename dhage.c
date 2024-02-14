@@ -3,7 +3,7 @@
 
 #include "dhage.h"
 
-#define STACK_SIZE 1024 * 1024 * 8
+#define STACK_SIZE 1024 * 2
 
 struct GreenThread {
     ucontext_t context;
@@ -11,14 +11,41 @@ struct GreenThread {
     int active;
     int tid;
     struct GreenThread *next;
+    void *stack;
 };
 
+void initialise();
+void cleanup_thread();
 void switch_threads();
 void thread_exit();
 void thread_wrapper();
 int create_thread(void (*function)(void));
 
 struct GreenThread *current_thread = NULL;
+ucontext_t cleanup_context;
+
+void
+error()
+{
+    exit(-1);
+}
+
+void
+initialise()
+{
+    getcontext(&cleanup_context);
+    cleanup_context.uc_stack.ss_sp = malloc(STACK_SIZE);
+    cleanup_context.uc_stack.ss_size = STACK_SIZE;
+    cleanup_context.uc_link = NULL;
+    makecontext(&cleanup_context, cleanup_thread, 0);
+}
+
+void
+cleanup_thread()
+{
+    free(current_thread->stack);
+    current_thread->stack = NULL;
+}
 
 void
 switch_threads()
@@ -43,6 +70,7 @@ void
 thread_exit()
 {
     current_thread->active = 0;
+    cleanup_thread();
     switch_threads();
 }
 
@@ -60,6 +88,10 @@ create_thread(void (*function)(void))
 
     struct GreenThread *conductor;
     struct GreenThread *gt = malloc(sizeof(struct GreenThread));
+    if (gt == NULL) {
+        error();
+    }
+
     gt->function = function;
     gt->active = 1;
 
@@ -78,12 +110,16 @@ create_thread(void (*function)(void))
     }
 
     getcontext(&gt->context);
-    gt->context.uc_stack.ss_sp = malloc(STACK_SIZE);
+    gt->stack = malloc(STACK_SIZE);
+    if (gt == NULL) {
+        error();
+    }
+
+    gt->context.uc_stack.ss_sp = gt->stack;
     gt->context.uc_stack.ss_size = STACK_SIZE;
-    gt->context.uc_link = 0;
+    gt->context.uc_link = &cleanup_context;
 
     makecontext(&gt->context, thread_wrapper, 0);
 
-    tid = tid + 1;
-    return tid;
+    return tid++;
 }
