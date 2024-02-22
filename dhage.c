@@ -3,7 +3,7 @@
 
 #include "dhage.h"
 
-#define STACK_SIZE 1024 * 2
+#define STACK_SIZE (1024 * 2)
 
 void error();
 void cleanup_thread();
@@ -26,7 +26,11 @@ initialise()
     current_thread = NULL;
 
     getcontext(&cleanup_context);
+
     cleanup_context.uc_stack.ss_sp = malloc(STACK_SIZE);
+    if (cleanup_context.uc_stack.ss_sp == NULL)
+        error();
+
     cleanup_context.uc_stack.ss_size = STACK_SIZE;
     cleanup_context.uc_link = NULL;
     makecontext(&cleanup_context, cleanup_thread, 0);
@@ -35,7 +39,9 @@ initialise()
 void
 cleanup_thread()
 {
-    free(current_thread->stack);
+    if (current_thread->stack != NULL)
+        free(current_thread->stack);
+
     current_thread->stack = NULL;
 }
 
@@ -45,24 +51,29 @@ switch_threads()
     struct GreenThread *prev_thread = current_thread;
     current_thread = current_thread->next;
 
+    /* Next thread being active should be guaranteed by the achitecture */
+    while (!(current_thread->active)) {
+        current_thread = current_thread->next;
+
+        if (current_thread == prev_thread)
+            exit(0);
+    }
+
     if (prev_thread->active)
         swapcontext(&prev_thread->context, &current_thread->context);
 
-    while (current_thread != prev_thread) {
-        if (current_thread->active)
-            setcontext(&current_thread->context);
-
-        current_thread = current_thread->next;
-    }
-    
-    exit(0);
+    setcontext(&current_thread->context);
 }
 
 void
 thread_exit()
 {
     current_thread->active = 0;
-    cleanup_thread();
+
+    current_thread->next->prev = current_thread->prev;
+    current_thread->prev->next = current_thread->next;
+    free(current_thread);
+
     switch_threads();
 }
 
@@ -76,9 +87,6 @@ thread_wrapper()
 int
 create_thread(void (*function)(void *), void *args)
 {
-    static int tid = 0;
-
-    struct GreenThread *conductor;
     struct GreenThread *gt = malloc(sizeof(struct GreenThread));
     if (gt == NULL) {
         error();
@@ -89,22 +97,20 @@ create_thread(void (*function)(void *), void *args)
     gt->args = args;
 
     if (current_thread == NULL) {
-        gt->tid = tid+1;
         current_thread = gt;
         current_thread->next = current_thread;
+        current_thread->prev = current_thread;
     } else {
-        gt->tid = tid+1;
-        conductor = current_thread;
-        while (conductor->tid != tid)
-            conductor = conductor->next;
-    
-        gt->next = conductor->next;
-        conductor->next = gt;
+        current_thread->next->prev = gt;
+        gt->next = current_thread->next;
+        current_thread->next = gt;
+        gt->prev = current_thread;
     }
 
     getcontext(&gt->context);
     gt->stack = malloc(STACK_SIZE);
-    if (gt == NULL) {
+    if (gt->stack == NULL) {
+        free(gt);
         error();
     }
 
@@ -114,7 +120,7 @@ create_thread(void (*function)(void *), void *args)
 
     makecontext(&gt->context, thread_wrapper, 0);
 
-    return tid++;
+    return 0;
 }
 
 void

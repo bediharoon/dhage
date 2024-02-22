@@ -4,8 +4,8 @@ struct GreenThread {
     ucontext_t context;
     void (*function)(void *);
     int active;
-    int tid;
     struct GreenThread *next;
+    struct GreenThread *prev;
     void *stack;
     void *args;
 };
