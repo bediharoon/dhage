@@ -5,6 +5,7 @@ A 'go' at implementing CSP-style preemptive concurrency in C.
 - [x] Green Threads + Cooperative Scheduler (Function Ends == Yield) using ucontext.h.
 - [x] Create stack cleanup + scheduler routines using uc\_link.
 - [x] Allow functions to take arguments.
+- [ ] Create a Threadpool to reuse exsisting pThreads.
 - [ ] Use pthreads to achieve pre-emptive concurrency with variable quanta of execution.
 - [ ] Make blocking channels to use CSP style concurrency.
 - [ ] Support multiple producers and consumers, different data types, and buffered channels.
