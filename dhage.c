@@ -7,7 +7,8 @@
 
 void error();
 void cleanup_thread();
-void switch_threads();
+void scheduler();
+void switch_threads(struct GreenThread *prev_thread, struct GreenThread *next_thread);
 void thread_exit();
 void thread_wrapper();
 
@@ -25,7 +26,8 @@ initialise()
 {
     current_thread = NULL;
 
-    getcontext(&cleanup_context);
+    if (getcontext(&cleanup_context) < 0)
+        error();
 
     cleanup_context.uc_stack.ss_sp = malloc(STACK_SIZE);
     if (cleanup_context.uc_stack.ss_sp == NULL)
@@ -39,6 +41,10 @@ initialise()
 void
 cleanup_thread()
 {
+    if (current_thread == NULL) {
+        exit(0);
+    }
+
     if (current_thread->stack != NULL)
         free(current_thread->stack);
 
@@ -46,8 +52,12 @@ cleanup_thread()
 }
 
 void
-switch_threads()
+scheduler()
 {
+    if (current_thread == NULL) {
+        exit(0);
+    }
+
     struct GreenThread *prev_thread = current_thread;
     current_thread = current_thread->next;
 
@@ -59,10 +69,16 @@ switch_threads()
             exit(0);
     }
 
-    if (prev_thread->active)
-        swapcontext(&prev_thread->context, &current_thread->context);
+    switch_threads(prev_thread, current_thread);
+}
 
-    setcontext(&current_thread->context);
+void
+switch_threads(struct GreenThread *prev_thread, struct GreenThread *next_thread)
+{
+    if (prev_thread->active)
+        swapcontext(&prev_thread->context, &next_thread->context);
+
+    setcontext(&next_thread->context);
 }
 
 void
@@ -74,7 +90,7 @@ thread_exit()
     current_thread->prev->next = current_thread->next;
     free(current_thread);
 
-    switch_threads();
+    scheduler();
 }
 
 void
