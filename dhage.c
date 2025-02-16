@@ -1,146 +1,143 @@
-#include <ucontext.h>
+#include <pthread.h>
 #include <stdlib.h>
 
-#include "dhage.h"
+// Linked list for the tasks (maybe prio queues, eventually?)
+typedef struct Task {
+    void (*function)(void*);
+    void* argument;
+    struct Task* next;
+} Task;
 
-#define STACK_SIZE (1024 * 2)
+typedef struct ThreadPool {
+    pthread_t* threads;
+    int num_threads;
+    volatile int shutdown; 
+    pthread_mutex_t lock;
+    pthread_cond_t cond;
+    Task* task_head;
+    Task* task_tail;
+} ThreadPool;
 
-void error();
-void cleanup_thread();
-void scheduler();
-void switch_threads(struct GreenThread *prev_thread, struct GreenThread *next_thread);
-void thread_exit();
-void thread_wrapper();
-
-struct GreenThread *current_thread;
-ucontext_t cleanup_context;
-
-void
-error()
-{
-    exit(-1);
+// Cooperative Round-Robin (I know... I know...)
+static void* worker(void* arg) {
+    ThreadPool* pool = (ThreadPool*)arg;
+    while (1) {
+        pthread_mutex_lock(&pool->lock);
+        while (pool->task_head == NULL && !pool->shutdown) {
+            pthread_cond_wait(&pool->cond, &pool->lock);
+        }
+        if (pool->shutdown) {
+            pthread_mutex_unlock(&pool->lock);
+            break;
+        }
+        Task* task = pool->task_head;
+        pool->task_head = task->next;
+        if (pool->task_head == NULL) {
+            pool->task_tail = NULL;
+        }
+        pthread_mutex_unlock(&pool->lock);
+        
+        (task->function)(task->argument);
+        free(task);
+    }
+    return NULL;
 }
 
-void
-initialise()
-{
-    current_thread = NULL;
+ThreadPool* threadpool_create(int num_threads) {
+    if (num_threads <= 0) return NULL;
 
-    if (getcontext(&cleanup_context) < 0)
-        error();
+    ThreadPool* pool = malloc(sizeof(ThreadPool));
+    if (!pool) return NULL;
 
-    cleanup_context.uc_stack.ss_sp = malloc(STACK_SIZE);
-    if (cleanup_context.uc_stack.ss_sp == NULL)
-        error();
-
-    cleanup_context.uc_stack.ss_size = STACK_SIZE;
-    cleanup_context.uc_link = NULL;
-    makecontext(&cleanup_context, cleanup_thread, 0);
-}
-
-void
-cleanup_thread()
-{
-    if (current_thread == NULL) {
-        exit(0);
+    pool->threads = malloc(num_threads * sizeof(pthread_t));
+    if (!pool->threads) {
+        free(pool);
+        return NULL;
     }
 
-    if (current_thread->stack != NULL)
-        free(current_thread->stack);
+    pool->num_threads = num_threads;
+    pool->shutdown = 0;
+    pool->task_head = NULL;
+    pool->task_tail = NULL;
 
-    current_thread->stack = NULL;
-}
-
-void
-scheduler()
-{
-    if (current_thread == NULL) {
-        exit(0);
+    if (pthread_mutex_init(&pool->lock, NULL) != 0) {
+        free(pool->threads);
+        free(pool);
+        return NULL;
     }
 
-    struct GreenThread *prev_thread = current_thread;
-    current_thread = current_thread->next;
-
-    /* Next thread being active should be guaranteed by the achitecture */
-    while (!(current_thread->active)) {
-        current_thread = current_thread->next;
-
-        if (current_thread == prev_thread)
-            exit(0);
+    if (pthread_cond_init(&pool->cond, NULL) != 0) {
+        pthread_mutex_destroy(&pool->lock);
+        free(pool->threads);
+        free(pool);
+        return NULL;
     }
 
-    switch_threads(prev_thread, current_thread);
+    for (int i = 0; i < num_threads; i++) {
+        if (pthread_create(&pool->threads[i], NULL, worker, pool) != 0) {
+            pool->shutdown = 1;
+            pthread_cond_broadcast(&pool->cond);
+            for (int j = 0; j < i; j++) pthread_join(pool->threads[j], NULL);
+            free(pool->threads);
+            pthread_mutex_destroy(&pool->lock);
+            pthread_cond_destroy(&pool->cond);
+            free(pool);
+            return NULL;
+        }
+    }
+    return pool;
 }
 
-void
-switch_threads(struct GreenThread *prev_thread, struct GreenThread *next_thread)
-{
-    if (prev_thread->active)
-        swapcontext(&prev_thread->context, &next_thread->context);
+void threadpool_destroy(ThreadPool* pool) {
+    if (!pool) return;
 
-    setcontext(&next_thread->context);
-}
+    pthread_mutex_lock(&pool->lock);
+    pool->shutdown = 1;
+    pthread_mutex_unlock(&pool->lock);
 
-void
-thread_exit()
-{
-    current_thread->active = 0;
-
-    current_thread->next->prev = current_thread->prev;
-    current_thread->prev->next = current_thread->next;
-    free(current_thread);
-
-    scheduler();
-}
-
-void
-thread_wrapper()
-{
-    current_thread->function(current_thread->args);
-    thread_exit();
-}
-
-int
-create_thread(void (*function)(void *), void *args)
-{
-    struct GreenThread *gt = malloc(sizeof(struct GreenThread));
-    if (gt == NULL) {
-        error();
+    pthread_cond_broadcast(&pool->cond);
+    for (int i = 0; i < pool->num_threads; i++) {
+        pthread_join(pool->threads[i], NULL);
     }
 
-    gt->function = function;
-    gt->active = 1;
-    gt->args = args;
+    Task* current = pool->task_head;
+    while (current) {
+        Task* next = current->next;
+        free(current);
+        current = next;
+    }
 
-    if (current_thread == NULL) {
-        current_thread = gt;
-        current_thread->next = current_thread;
-        current_thread->prev = current_thread;
+    free(pool->threads);
+    pthread_mutex_destroy(&pool->lock);
+    pthread_cond_destroy(&pool->cond);
+    free(pool);
+}
+
+int threadpool_enqueue(ThreadPool* pool, void (*function)(void*), void* arg) {
+    if (!pool || !function) return -1;
+
+    Task* task = malloc(sizeof(Task));
+    if (!task) return -1;
+
+    task->function = function;
+    task->argument = arg;
+    task->next = NULL;
+
+    pthread_mutex_lock(&pool->lock);
+    if (pool->shutdown) {
+        pthread_mutex_unlock(&pool->lock);
+        free(task);
+        return -1;
+    }
+
+    if (!pool->task_tail) {
+        pool->task_head = pool->task_tail = task;
     } else {
-        current_thread->next->prev = gt;
-        gt->next = current_thread->next;
-        current_thread->next = gt;
-        gt->prev = current_thread;
+        pool->task_tail->next = task;
+        pool->task_tail = task;
     }
 
-    getcontext(&gt->context);
-    gt->stack = malloc(STACK_SIZE);
-    if (gt->stack == NULL) {
-        free(gt);
-        error();
-    }
-
-    gt->context.uc_stack.ss_sp = gt->stack;
-    gt->context.uc_stack.ss_size = STACK_SIZE;
-    gt->context.uc_link = &cleanup_context;
-
-    makecontext(&gt->context, thread_wrapper, 0);
-
+    pthread_cond_signal(&pool->cond);
+    pthread_mutex_unlock(&pool->lock);
     return 0;
-}
-
-void
-orchestrate()
-{
-    setcontext(&current_thread->context);
 }
